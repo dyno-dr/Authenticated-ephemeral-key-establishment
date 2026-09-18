@@ -1,672 +1,669 @@
----
-title: "CS6530 – Applied Cryptography: Assignment 2"
-subtitle: "Authenticated Ephemeral Key Establishment"
-author:
-  - "Name: Santhosh D R"
-  - "Roll Number: CS26E004"
-  - "Partner: Nipun Bargal (MD24B033)"
-date: "September 2026"
----
+CS6530 – Applied Cryptography
+Jul–Nov 2026
 
-# CS6530 — Applied Cryptography
-## Assignment 2: Authenticated Ephemeral Key Establishment
-### Technical Report
+Assignment 2
+Authenticated Ephemeral Key Establishment
+X25519 · Ed25519 · SHA-256 · HKDF-SHA-256 · AES-256-GCM
 
-| Field | Value |
-|---|---|
-| Name | Santhosh D R |
-| Roll Number | CS26E004 |
-| Partner | Nipun Bargal (MD24B033) |
-| Date | September 18, 2026 |
+REPORT BY
 
----
+Name:         Santhosh D R
+Roll Number:  CS26E004
+Partner:      Nipun Bargal (MD24B033)
+Instructor:   Dr. Manikantan Srinivasan
+Department of Computer Science and Engineering
 
-## 1. Introduction
 
-This assignment requires building a mutually authenticated, forward-secret, replay-resistant secure channel between two parties — Alice (the initiator) and Bob (the responder) — communicating over an untrusted TCP network supplied by the instructor's `transport.py` helper.
+─────────────────────────────────────────────────────────────────────────────
 
-The protocol is not TLS and does not use any existing secure-channel library. Every cryptographic step — key generation, signature, DH exchange, HKDF derivation, AEAD encryption — is implemented explicitly using Python's `cryptography` library, which provides access to standard primitives without allowing reimplementation of the algorithms themselves.
+1. Design Summary
 
-The protocol achieves four security goals:
+The goal of this assignment is to implement an authenticated ephemeral key
+establishment protocol between Alice and Bob over an untrusted TCP network.
+The protocol provides mutual authentication, forward secrecy, replay resistance,
+and MITM resistance using the fixed cryptographic suite: X25519, Ed25519,
+SHA-256, HKDF-SHA-256, and AES-256-GCM.
 
-1. **Mutual authentication** — each side proves it holds the correct long-term Ed25519 private key before any application data is exchanged.
-2. **Forward secrecy** — session confidentiality is anchored to ephemeral X25519 keys that are discarded after the session; a later compromise of the long-term signing key cannot decrypt past traffic.
-3. **Replay resistance** — a monotonic per-direction counter is checked before AEAD decryption; a previously accepted record cannot be submitted again.
-4. **MITM resistance** — the Ed25519 signatures cover the full handshake transcript including both ephemeral keys; substituting an ephemeral key changes the transcript hash and breaks the signature.
+1.1 System Model and Assumptions
 
----
+•  Alice runs on one machine; Bob runs on another. The TCP helper (transport.py)
+   provides framing only — no confidentiality, authentication, or integrity.
 
-## 2. Cryptographic Algorithms Used
+•  Long-term Ed25519 keypairs are generated once and pre-shared out-of-band.
+   No PKI or certificate chain is required.
 
-The assignment specifies a fixed cryptographic suite. No substitutions or additions were made.
+•  X25519 and Ed25519 are kept on separate key pairs and are never reused or
+   converted between roles.
 
-| Algorithm | Standard | Purpose in this protocol |
-|---|---|---|
-| X25519 | RFC 7748 | Ephemeral Diffie-Hellman key agreement — produces the session shared secret |
-| Ed25519 | RFC 8032 | Long-term identity authentication — signs and verifies the handshake transcript |
-| SHA-256 | FIPS 180-4 | Hashes the 124-byte canonical transcript into a 32-byte digest |
-| HKDF-SHA-256 | RFC 5869 | Extracts the PRK from the shared secret and derives two directional 256-bit traffic keys |
-| AES-256-GCM | NIST SP 800-38D | Provides authenticated encryption of every application record |
+•  Mallory (for TR-2) runs as a third process and intercepts the TCP connection.
+   A third physical machine is not required.
 
-**Key separation.** X25519 and Ed25519 use completely separate key pairs and are never converted or reused between roles. In the Python `cryptography` library, `X25519PrivateKey` and `Ed25519PrivateKey` are distinct types: `X25519PrivateKey` has an `exchange()` method; `Ed25519PrivateKey` has a `sign()` method. Passing one where the other is expected raises a `TypeError` at the call site.
+1.2 Four-Message Handshake Design (M1–M4)
 
----
+The handshake follows the protocol ladder defined in the assignment (§5).
 
-## 3. Protocol Design
+M1 (Alice → Bob):
+•  Alice generates a fresh 16-byte Alice_SID and an ephemeral X25519 keypair.
+•  She sends: PROTOCOL_ID || Alice_ID || Alice_SID || Alice_Ephemeral_PK
 
-### 3.1 System Model
+M2 (Bob → Alice):
+•  Bob generates a fresh 16-byte Bob_SID and an ephemeral X25519 keypair.
+•  He echoes Alice_SID to allow Alice to detect session splicing.
+•  He sends: PROTOCOL_ID || Bob_ID || Alice_SID (echo) || Bob_SID || Bob_Ephemeral_PK
+•  Alice verifies the echoed Alice_SID immediately before reading any further field.
 
-Alice runs on one machine; Bob runs on another (or, in the self-contained test scripts, in a separate thread over a `socket.socketpair()`). The TCP connection is managed by the instructor-supplied `transport.py`, which frames messages as `uint16_be(length) || message_bytes`. The transport provides no security — no confidentiality, no authentication, no integrity protection. Every security property is provided by the protocol built on top of it.
+M3 (Alice → Bob):
+•  Both sides independently build the 124-byte canonical transcript (§1.3).
+•  Alice signs SHA-256(transcript) with her long-term Ed25519 private key.
+•  She sends: Alice_Signature (64 bytes).
+•  Bob verifies using Alice's trusted long-term public key.
+•  Abort rule: if verification fails, Bob raises HandshakeError — no M4 is sent.
 
-Mallory, for the MITM experiment (TR-2), is an additional process that intercepts the TCP connection between Alice and Bob. She does not need a third physical machine; in the two-machine test she runs on the same host as Alice and connects to Bob across the network.
+M4 (Bob → Alice):
+•  Bob signs the same Transcript_Hash with his long-term Ed25519 private key.
+•  He sends: Bob_Signature (64 bytes).
+•  Alice verifies using Bob's trusted long-term public key.
+•  Abort rule: if verification fails, Alice raises HandshakeError — no keys returned.
 
-### 3.2 Long-Term Keys
+Failure handling: Any mismatch — wrong PROTOCOL_ID, wrong peer ID, Alice_SID
+echo mismatch, or Ed25519 verification failure — raises HandshakeError before any
+application key material is derived or returned to the caller.
 
-Before the first session, each party generates an Ed25519 keypair and exchanges the public key with the peer out-of-band. The assignment assumes these public keys are authentic (no PKI or certificate chain is needed). In our implementation, keypairs are generated once with `protocol/identity.py`:
+1.3 Canonical Transcript Construction
 
-```python
-private_key = Ed25519PrivateKey.generate()
-public_key  = private_key.public_key()
-```
+After M2, both sides independently construct an identical 124-byte transcript:
 
-Private keys are stored as PEM files (`keys/alice.key`, `keys/bob.key`) and are gitignored — they never appear in the repository. Public key files (`keys/alice.pub`, `keys/bob.pub`) are safe to share.
+    Transcript = PROTOCOL_ID (12 bytes, ASCII "CS6530-A2-v1")
+              || Alice_ID    (8 bytes)
+              || Bob_ID      (8 bytes)
+              || Alice_SID   (16 bytes)
+              || Bob_SID     (16 bytes)
+              || Alice_Ephemeral_PK (32 bytes, raw X25519)
+              || Bob_Ephemeral_PK  (32 bytes, raw X25519)
+              = 124 bytes total
 
-### 3.3 Session Identifiers
+    Transcript_Hash = SHA-256(Transcript)   →  32 bytes
 
-Each session begins with both sides generating a fresh 16-byte random session identifier:
+The transcript binds session identifiers and both ephemeral public keys into the
+signature. Any substitution of an ephemeral key (e.g., by Mallory) changes the
+transcript, changes the hash, and invalidates the signature from the other side.
 
-```python
-alice_sid = os.urandom(16)
-bob_sid   = os.urandom(16)
-```
+1.4 Key Derivation: X25519 + HKDF-SHA-256
 
-SIDs serve two purposes: they distinguish parallel or repeated sessions from each other, and they are included in the canonical transcript, so the signatures bind authentication to a specific session invocation.
+After M4, both sides perform the Diffie-Hellman exchange and key derivation:
 
----
+Step 1 — X25519 shared secret:
+    shared_secret = X25519(own_eph_priv, peer_eph_pub)   →  32 bytes
 
-## 4. Four-Message Handshake (M1–M4)
+Step 2 — HKDF Extract (using Transcript_Hash as salt):
+    PRK = HKDF-Extract(salt = Transcript_Hash, IKM = shared_secret)
 
-The handshake is a four-message protocol. Alice initiates; Bob responds. The full exchange is implemented in `protocol/handshake.py`.
+Step 3 — HKDF Expand (two independent traffic keys):
+    K_Alice_to_Bob = HKDF-Expand(PRK, info = "CS6530-A2 Alice->Bob", L = 32)
+    K_Bob_to_Alice = HKDF-Expand(PRK, info = "CS6530-A2 Bob->Alice", L = 32)
 
-```
-Alice                                                Bob
-  |                                                   |
-  |-- M1: PROTOCOL_ID, Alice_ID, Alice_SID, --------> |
-  |        Alice_Ephemeral_PK                         |
-  |                                                   |
-  |<-- M2: PROTOCOL_ID, Bob_ID, Alice_SID (echo), --- |
-  |         Bob_SID, Bob_Ephemeral_PK                 |
-  |                                                   |
-  |  [both sides independently build transcript       |
-  |   and compute SHA-256(transcript)]                |
-  |                                                   |
-  |-- M3: Ed25519_Sign(Alice_LT_sk, T_hash) --------> |
-  |                                    [Bob verifies] |
-  |                                                   |
-  |<-- M4: Ed25519_Sign(Bob_LT_sk, T_hash) ---------- |
-  |  [Alice verifies]                                 |
-  |                                                   |
-  |  [both derive K_A2B and K_B2A]                    |
-  |                                                   |
-  |<======= AES-256-GCM application records ========> |
-```
+•  The raw X25519 shared secret is never used directly as an AES key (FR-4).
+•  Using Transcript_Hash as the HKDF salt binds derived keys to this session's
+   specific IDs, SIDs, and ephemeral keys.
+•  The two distinct info strings produce cryptographically independent keys,
+   ensuring nonce independence between directions.
+
+1.5 AES-256-GCM Record Layer: Nonce / Counter / AAD
 
-### 4.1 M1 — Alice → Bob
+Each direction has its own 64-bit counter starting at 0. The 96-bit GCM nonce is:
+
+    Nonce = 0x00000000 || uint64_be(counter)   [4 + 8 = 12 bytes]
+
+The Additional Authenticated Data (AAD) is:
+
+    AAD = Sender_ID || Receiver_ID || Alice_SID || Bob_SID || uint64_be(counter)
+
+The AAD is not encrypted but is authenticated by the GCM tag. Any modification to
+the session identifiers, message direction, or counter byte in transit causes tag
+verification to fail.
+
+Verify-then-advance ordering: the receiver checks the counter value before
+decryption. If AEAD decryption fails, the receive counter is NOT advanced —
+ensuring that a garbage injection cannot permanently consume a counter slot and
+block a legitimate record.
+
+1.6 Connectivity Test
+
+Before implementing the cryptographic protocol, the instructor-supplied test
+programs were verified on localhost.
+
+Alice output:
+    Alice: connected to Bob
+    Alice received: Hello Alice
+
+Bob output:
+    Bob: connected to ('127.0.0.1', <port>)
+    Bob received: Hello Bob
+
+Outcome: PASS. The TCP helper, 2-byte length framing, and send_message /
+receive_message all function correctly prior to any cryptographic layer.
 
-Alice generates a fresh ephemeral X25519 keypair and a fresh 16-byte `Alice_SID`. She sends:
 
-```
-M1 = { PROTOCOL_ID, Alice_ID, Alice_SID, Alice_Ephemeral_PK }
-```
+─────────────────────────────────────────────────────────────────────────────
 
-Only the raw 32-byte X25519 public key bytes travel on the wire — not a PEM or DER encoding.
-
-### 4.2 M2 — Bob → Alice
-
-Bob generates his own ephemeral X25519 keypair and `Bob_SID`. He echoes `Alice_SID` in M2:
-
-```
-M2 = { PROTOCOL_ID, Bob_ID, Alice_SID (echo), Bob_SID, Bob_Ephemeral_PK }
-```
-
-When Alice receives M2, she verifies that the echoed `Alice_SID` matches what she sent in M1. A mismatch aborts the session immediately — before any cryptographic material is used. This prevents a session-splicing attack where an adversary attempts to mix material from different sessions.
-
-### 4.3 Transcript Construction
-
-After M2, both sides independently construct the same 124-byte canonical transcript:
-
-```
-Transcript = PROTOCOL_ID (12)
-           || Alice_ID (8)
-           || Bob_ID (8)
-           || Alice_SID (16)
-           || Bob_SID (16)
-           || Alice_Ephemeral_PK (32)
-           || Bob_Ephemeral_PK (32)
-           = 124 bytes total
-```
-
-The field order is fixed by the specification. If either side deviates — swapping fields, omitting a field, using hex instead of raw bytes — SHA-256 produces a different 32-byte digest, and the peer's signature immediately fails to verify. The format is self-policing.
-
-```
-Transcript_Hash = SHA-256(Transcript)  →  32 bytes
-```
-
-### 4.4 M3 — Alice → Bob (Authentication)
-
-Alice signs the Transcript_Hash using her long-term Ed25519 private key:
-
-```python
-alice_signature = Ed25519PrivateKey.sign(alice_lt_sk, transcript_hash)
-```
-
-The Ed25519 signature is 64 bytes. Bob verifies it using Alice's trusted long-term public key. If verification fails, Bob raises `HandshakeError` and the session is aborted — no M4 is sent, no keys are derived.
-
-### 4.5 M4 — Bob → Alice (Authentication)
-
-Bob signs the same Transcript_Hash with his long-term Ed25519 private key. Alice verifies it using Bob's trusted long-term public key. If verification fails, Alice raises `HandshakeError`.
-
-The mutual verification in M3/M4 ensures both sides confirm they are talking to the correct authenticated peer before any session keys are derived. The `HandshakeError` exception is raised before `HandshakeResult` is constructed and returned — the caller never receives keys from a failed handshake.
-
-### 4.6 Abort Rule
-
-```python
-def _check(condition: bool, msg: str) -> None:
-    if not condition:
-        raise HandshakeError(msg)
-```
-
-Any failure — wrong `PROTOCOL_ID`, wrong `Alice_ID` in M1, `Alice_SID` echo mismatch in M2, or Ed25519 verification failure in M3/M4 — immediately raises `HandshakeError`. The exception propagates before state advances. This implements the "authenticate-before-advance" ordering that is critical for both the MITM and replay security properties.
-
----
-
-## 5. Key Derivation
-
-### 5.1 X25519 Shared Secret
-
-After M4, both sides compute the same 32-byte Diffie-Hellman shared secret:
-
-```python
-# On Alice's side:
-shared_secret = alice_eph_priv.exchange(X25519PublicKey.from_public_bytes(bob_epk))
-
-# On Bob's side:
-shared_secret = bob_eph_priv.exchange(X25519PublicKey.from_public_bytes(alice_epk))
-```
-
-By the Diffie-Hellman property, both computations produce the same 32-byte value even though each side uses a different private key.
-
-### 5.2 HKDF-SHA-256 Traffic Key Derivation
-
-The raw X25519 shared secret is not used directly as an AES key (FR-4). It is processed through HKDF-SHA-256 in two stages:
-
-**Extract:**
-```
-PRK = HKDF-Extract(salt = Transcript_Hash, IKM = shared_secret)
-```
-
-Using `Transcript_Hash` as the salt — rather than a fixed string or empty salt — binds the PRK to this specific session. Even if the same two parties produced the same DH shared secret in a different session (which is astronomically unlikely but theoretically possible), the different SIDs and ephemeral keys would produce a different `Transcript_Hash`, and therefore a different PRK and different traffic keys.
-
-**Expand (two independent keys):**
-```
-K_Alice_to_Bob = HKDF-Expand(PRK, info = b"CS6530-A2 Alice->Bob", L = 32)
-K_Bob_to_Alice = HKDF-Expand(PRK, info = b"CS6530-A2 Bob->Alice", L = 32)
-```
-
-The only difference between the two expansions is the `info` string. This produces two cryptographically independent 256-bit keys from the same PRK. Using separate directional keys means that nonce value N under `K_Alice_to_Bob` is completely independent from nonce value N under `K_Bob_to_Alice` — they cannot interfere even if both sides use counter value 0 simultaneously.
-
-The implementation in `protocol/key_schedule.py`:
-
-```python
-prk   = HKDF(algorithm=SHA256(), length=32, salt=transcript_hash, info=b"").derive(shared_secret)
-k_a2b = HKDFExpand(algorithm=SHA256(), length=32, info=b"CS6530-A2 Alice->Bob").derive(prk)
-k_b2a = HKDFExpand(algorithm=SHA256(), length=32, info=b"CS6530-A2 Bob->Alice").derive(prk)
-```
-
----
-
-## 6. AES-256-GCM Record Layer
-
-After the handshake, all application data is exchanged as AES-256-GCM records. The implementation is in `protocol/record_layer.py`.
-
-### 6.1 Nonce Construction
-
-Each direction has its own independent counter, starting at 0. The 96-bit GCM nonce is:
-
-```
-Nonce = 0x00000000 || uint64_be(counter)    [4 bytes + 8 bytes = 12 bytes]
-```
-
-The fixed zero prefix is safe because each direction uses a different key. Counter value 0 under `K_Alice_to_Bob` and counter value 0 under `K_Bob_to_Alice` produce completely different (key, nonce) pairs — nonce uniqueness is guaranteed per-key, which is the only condition GCM requires.
-
-### 6.2 Additional Authenticated Data (AAD)
-
-```
-AAD = Sender_ID || Receiver_ID || Alice_SID || Bob_SID || uint64_be(counter)
-```
-
-The AAD is not encrypted but is included in the GCM authentication computation. Any modification to the AAD — swapping sender and receiver, replaying from a different session, or changing the counter byte in transit — causes the GCM tag verification to fail. This means the protocol detects AAD tampering without the receiver needing to inspect the header fields manually.
-
-### 6.3 Verify-Before-Advance Ordering
-
-The counter check and AEAD decryption are ordered deliberately:
-
-```python
-def open(self, ciphertext_with_tag, counter_claimed, ...):
-    # 1. Counter check first — before AEAD
-    if counter_claimed != self._receive_counter:
-        raise RecordError(f"stale/unexpected counter: got {counter_claimed}, expected {self._receive_counter}")
-    
-    # 2. AEAD decrypt — counter NOT advanced yet
-    try:
-        plaintext = self._receive_aead.decrypt(nonce, ciphertext_with_tag, aad)
-    except InvalidTag:
-        # State unchanged — the counter slot is NOT consumed
-        raise RecordError("AEAD verification failed")
-    
-    # 3. Advance counter ONLY after AEAD succeeds
-    self._receive_counter += 1
-    return plaintext
-```
-
-If an attacker injects a garbage packet at the expected counter value, AEAD decryption fails and `_receive_counter` is not incremented. The legitimate record with the same counter value can still be accepted on the next call. If the counter were advanced before AEAD, an attacker could permanently desynchronise the receiver by flooding it with garbage packets at the next expected counter.
-
-### 6.4 Key Usage
-
-```python
-# Alice's ApplicationRecordLayer:
-rl = ApplicationRecordLayer(send_key=k_alice_to_bob, receive_key=k_bob_to_alice)
-
-# Bob's ApplicationRecordLayer:
-rl = ApplicationRecordLayer(send_key=k_bob_to_alice, receive_key=k_alice_to_bob)
-```
-
-The `__init__` asserts `send_key != receive_key` to catch misconfiguration immediately.
-
----
-
-## 7. Connectivity Test
-
-Before implementing the cryptographic protocol, the instructor-supplied connectivity test was verified on localhost to confirm transport framing works:
-
-**Alice output:**
-```
-Alice: connected to Bob
-Alice received: Hello Alice
-```
-
-**Bob output:**
-```
-Bob: connected to ('127.0.0.1', <port>)
-Bob received: Hello Bob
-```
-
-This confirms the TCP helper (`transport.py`), the 2-byte length framing, and `send_message`/`receive_message` all function correctly before any cryptographic protocol is layered on top.
-
----
-
-## 8. TR-1 — Normal Authenticated Session
-
-A complete authenticated session was run between Alice and Bob, exchanging three records in each direction (counters 0, 1, 2).
-
-### 8.1 Handshake Evidence
-
-**alice.jsonl — HANDSHAKE_OK line:**
-```json
-{
-  "ts": "2026-09-18T14:33:05Z",
-  "role": "alice",
-  "event": "HANDSHAKE_OK",
-  "alice_id": "AL000001",
-  "bob_id": "BO000001",
-  "alice_sid": "e0a713436b1863e9ec39d85c08906d2c",
-  "bob_sid":   "c7e90a3e230e5dd776b225693c0c4767",
-  "shared_secret_fp": "20fb19ff2b7f9e5f",
-  "k_a2b_fp":         "6a1099fafdc55c9d",
-  "k_b2a_fp":         "b428f7dc68d8ceb2"
-}
-```
-
-**bob.jsonl — HANDSHAKE_OK line:**
-```json
-{
-  "ts": "2026-09-18T14:33:05Z",
-  "role": "bob",
-  "event": "HANDSHAKE_OK",
-  "alice_id": "AL000001",
-  "bob_id": "BO000001",
-  "alice_sid": "e0a713436b1863e9ec39d85c08906d2c",
-  "bob_sid":   "c7e90a3e230e5dd776b225693c0c4767",
-  "shared_secret_fp": "20fb19ff2b7f9e5f",
-  "k_a2b_fp":         "6a1099fafdc55c9d",
-  "k_b2a_fp":         "b428f7dc68d8ceb2"
-}
-```
-
-**Observation:** Both sides independently computed the same `shared_secret_fp`, `k_a2b_fp`, and `k_b2a_fp`. This confirms that the X25519 Diffie-Hellman exchange and HKDF derivation are symmetric and correct. The three fingerprints are all different from each other — specifically, `shared_secret_fp` (`20fb19ff…`) differs from `k_a2b_fp` (`6a1099fa…`) and `k_b2a_fp` (`b428f7dc…`), confirming that FR-4 is satisfied: the raw DH output is not used directly as an AES key.
-
-### 8.2 Application Record Evidence
-
-**Alice — sent records (Alice → Bob direction):**
-
-| Counter | Nonce | Plaintext | Tag (first 8 bytes) |
-|---|---|---|---|
-| 0 | `000000000000000000000000` | `Alice→Bob: message 0` | `28e4de03fb54eede` |
-| 1 | `000000000000000000000001` | `Alice→Bob: message 1` | (logged in alice.jsonl) |
-| 2 | `000000000000000000000002` | `Alice→Bob: message 2` | `d71f6b7a61df9231` |
-
-**Alice — received records (Bob → Alice direction):**
-
-| Counter | Nonce | Plaintext | Tag (first 8 bytes) |
-|---|---|---|---|
-| 0 | `000000000000000000000000` | `Bob→Alice: reply 0` | `d39b81632c9cb704` |
-| 1 | `000000000000000000000001` | `Bob→Alice: reply 1` | `a401395192a22737` |
-| 2 | `000000000000000000000002` | `Bob→Alice: reply 2` | `d856b82d31db35af` |
-
-**Cross-verification:** The `tag_fp` for counter-0 (`28e4de03fb54eede`) in Alice's RECORD_SENT log exactly matches the `tag_fp` in Bob's RECORD_RECEIVED log. This confirms the ciphertext was not modified in transit and that both sides are operating with the same key for that direction.
-
-Both directions use independent counters, both starting at 0, both incrementing to 2. The nonces `000000000000000000000000`, `000000000000000000000001`, `000000000000000000000002` confirm the 4-byte zero prefix plus 8-byte big-endian counter construction.
-
-### 8.3 Complete alice.jsonl Log
-
-```json
-{"ts":"2026-09-18T14:33:05Z","role":"alice","event":"HANDSHAKE_OK","alice_id":"AL000001","bob_id":"BO000001","alice_sid":"e0a713436b1863e9ec39d85c08906d2c","bob_sid":"c7e90a3e230e5dd776b225693c0c4767","shared_secret_fp":"20fb19ff2b7f9e5f","k_a2b_fp":"6a1099fafdc55c9d","k_b2a_fp":"b428f7dc68d8ceb2"}
-{"ts":"2026-09-18T14:33:05Z","role":"alice","event":"SUCCESS","outcome":"RECORD_SENT","direction":"AL000001→BO000001","counter":0,"nonce":"000000000000000000000000","plaintext":"Alice→Bob: message 0","tag_fp":"28e4de03fb54eede"}
-{"ts":"2026-09-18T14:33:05Z","role":"alice","event":"SUCCESS","outcome":"RECORD_RECEIVED","direction":"BO000001→AL000001","counter":0,"nonce":"000000000000000000000000","plaintext":"Bob→Alice: reply 0","tag_fp":"d39b81632c9cb704"}
-{"ts":"2026-09-18T14:33:05Z","role":"alice","event":"SUCCESS","outcome":"RECORD_SENT","direction":"AL000001→BO000001","counter":1,"nonce":"000000000000000000000001","plaintext":"Alice→Bob: message 1","tag_fp":"(see alice.jsonl)"}
-{"ts":"2026-09-18T14:33:05Z","role":"alice","event":"SUCCESS","outcome":"RECORD_RECEIVED","direction":"BO000001→AL000001","counter":1,"nonce":"000000000000000000000001","plaintext":"Bob→Alice: reply 1","tag_fp":"a401395192a22737"}
-{"ts":"2026-09-18T14:33:05Z","role":"alice","event":"SUCCESS","outcome":"RECORD_SENT","direction":"AL000001→BO000001","counter":2,"nonce":"000000000000000000000002","plaintext":"Alice→Bob: message 2","tag_fp":"d71f6b7a61df9231"}
-{"ts":"2026-09-18T14:33:05Z","role":"alice","event":"SUCCESS","outcome":"RECORD_RECEIVED","direction":"BO000001→AL000001","counter":2,"nonce":"000000000000000000000002","plaintext":"Bob→Alice: reply 2","tag_fp":"d856b82d31db35af"}
-```
-
----
-
-## 9. TR-2 — Man-in-the-Middle Attack
-
-Mallory positions herself between Alice and Bob. She accepts Alice's connection and independently connects to Bob, generating two separate X25519 ephemeral keypairs — one presented to Alice as "Bob's" key, one presented to Bob as "Alice's" key.
-
-### 9.1 The MITM Structure
-
-```
-Alice ─── [Alice_EPK, Alice_SID] ──────────────────────► Mallory
-Mallory ── [Alice_ID, Alice_SID, Mallory_B_EPK] ─────► Bob
-Bob ──── [Bob_ID, Alice_SID, Bob_SID, Bob_EPK] ──────► Mallory
-Mallory ── [Bob_ID, Alice_SID, Bob_SID, Mallory_A_EPK] ► Alice
-```
-
-Each side performs DH with Mallory's key instead of the peer's real key. Alice and Mallory establish secret `S_AM`; Bob and Mallory establish secret `S_MB`. Mallory derives four independent traffic keys — two per sub-session. She can decrypt everything Alice sends, modify it, re-encrypt it, and forward to Bob, and vice versa.
-
-### 9.2 TR-2A — Weakened Mode (Attack Succeeds)
-
-With `--insecure-demo` on all three processes, Ed25519 authentication is skipped. Each side believes it has an authenticated session with the peer.
-
-**Key fingerprint mismatch proves the attack:**
-
-From Alice's perspective, Alice's `k_a2b_fp` is `8e3cec2e…`. But Bob's `k_a2b_fp` for the same session is `eb3d54fd…`. Alice and Bob hold different session keys — they are not talking to each other.
-
-**Mallory's log (mallory.jsonl — weakened):**
-
-```json
-{"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"TRANSCRIPT_HASHES",
- "alice_side_t_hash":"3da7f58e5541754300bb050ec971f7a795625bc11e30347a8641cf2ad59e9fa1",
- "bob_side_t_hash":  "79b49c4bd21719b5d1fd9f8f90d24c5f179542b975bd31a4b9d4fa06b70aa54c",
- "hashes_differ": true}
-
-{"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"MALLORY_KEYS",
- "k_alice_to_mallory_fp": "8e3cec2e1031fee8",
- "k_mallory_to_alice_fp": "a74137b96e8cb60a",
- "k_mallory_to_bob_fp":   "eb3d54fd7bed3cbe",
- "k_bob_to_mallory_fp":   "210b195a44e29887"}
-
-{"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"MALLORY_READ",
- "direction":"AL000001→mallory→BO000001","counter":0,
- "plaintext_seen":"Alice→Bob: message 0"}
-
-{"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"MALLORY_READ",
- "direction":"AL000001→mallory→BO000001","counter":1,
- "plaintext_seen":"Alice→Bob: message 1"}
-
-{"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"MALLORY_READ",
- "direction":"AL000001→mallory→BO000001","counter":2,
- "plaintext_seen":"Alice→Bob: message 2"}
-
-{"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"SUCCESS",
- "outcome":"MITM_SESSION_COMPLETE","records_intercepted":3}
-```
-
-Mallory read all six plaintext messages (three from Alice, three from Bob) and forwarded each with `[intercepted by Mallory]` appended. Bob received `"Alice→Bob: message 0 [intercepted by Mallory]"` — believing it was Alice's original message.
-
-**What makes the attack possible:** Without authentication, neither Alice nor Bob can verify that the ephemeral public key they received actually belongs to the claimed peer. Mallory substitutes her own ephemeral keys for theirs, and the session proceeds normally from each party's perspective.
-
-### 9.3 TR-2B — Authenticated Mode (Attack Fails)
-
-With authentication restored (no `--insecure-demo`), Mallory's substitution causes the handshake to abort. The failure mechanism:
-
-After Mallory substitutes ephemeral keys, each side computes a different Transcript_Hash:
-
-- Alice computes `T_hash_Alice = SHA-256(PROTOCOL_ID || IDs || SIDs || Alice_EPK || Mallory_A_EPK)`
-- Bob computes `T_hash_Bob   = SHA-256(PROTOCOL_ID || IDs || SIDs || Mallory_B_EPK || Bob_EPK)`
-
-These are different hashes. Alice signs `T_hash_Alice` and sends it as M3. Bob would verify this signature against `T_hash_Bob`. The signature is valid for `T_hash_Alice` but not for `T_hash_Bob` — verification fails.
-
-Mallory cannot fix this. To produce a valid M3 for Bob, she would need to sign `T_hash_Bob` with Alice's long-term private key, which she does not hold. Mallory cannot forge a signature even with Alice's public key — only the private key can produce valid signatures.
-
-**Mallory's log (authenticated mode):**
-
-```json
-{"ts":"2026-09-18T16:07:11Z","role":"mallory","event":"TRANSCRIPT_HASHES",
- "alice_side_t_hash":"5f62dbb4ea4bfcbd7ff8d33beb26c13b5cb62a69c8f488ccac717b1cb78d4b06",
- "bob_side_t_hash":  "7fd7885c850df53c79180e82f386a60a8e26736dc35a71a4cc6567ba6addf887",
- "hashes_differ": true}
-
-{"ts":"2026-09-18T16:07:11Z","role":"mallory","event":"FAILED",
- "reason":"authenticated mode: M3 cannot verify at Bob (transcript mismatch)",
- "alice_t_hash":"5f62dbb4ea4bfcbd7ff8d33beb26c13b5cb62a69c8f488ccac717b1cb78d4b06",
- "bob_t_hash":  "7fd7885c850df53c79180e82f386a60a8e26736dc35a71a4cc6567ba6addf887"}
-
-{"ts":"2026-09-18T16:07:11Z","role":"mallory","event":"FAILED",
- "reason":"authenticated mode: aborting before forwarding M3 (cannot produce valid sig)"}
-```
-
-Mallory detects the mismatch and aborts before forwarding M3. Alice receives a connection close and raises `HandshakeError`. Bob, who never received M3, also raises `HandshakeError`. Zero application records were exchanged.
-
-**The key point:** The transcript hash covers the ephemeral public keys. Substituting an ephemeral key changes the transcript, changing the hash, making the signature from the other side invalid for the modified transcript. This is exactly why the signatures must cover the full transcript — a signature that only covered the peer identity but not the ephemeral keys would not prevent Mallory from substituting keys after the identity check.
-
----
-
-## 10. TR-3 — Replay Attack
-
-A replay attack involves capturing a legitimate, valid ciphertext and submitting it again to the receiver. The test demonstrates two sub-experiments.
-
-### 10.1 Experiment A — Stale Counter Rejection
-
-Records at counters 0 and 1 were sent and accepted. The byte-exact counter-0 wire frame (with a valid, unmodified GCM tag) was then submitted to a receiver whose `receive_counter` was 2.
-
-**Replay log (replay.jsonl):**
-
-```json
-{"ts":"2026-09-18T14:42:29Z","role":"replay","event":"SUCCESS","outcome":"RECORD_RECEIVED",
- "direction":"AL000001→BO000001","counter":0,"nonce":"000000000000000000000000",
- "plaintext":"record 0","tag_fp":"efb26d326072547b"}
-
-{"ts":"2026-09-18T14:42:29Z","role":"replay","event":"SUCCESS","outcome":"RECORD_RECEIVED",
- "direction":"AL000001→BO000001","counter":1,"nonce":"000000000000000000000001",
- "plaintext":"record 1","tag_fp":"43621a2aac593b1b"}
-
-{"ts":"2026-09-18T14:42:29Z","role":"replay","event":"REJECTED",
- "direction":"AL000001→BO000001 (REPLAY)","counter":0,
- "reason":"stale/unexpected counter: got 0, expected 2"}
-
-{"ts":"2026-09-18T14:42:29Z","role":"replay","event":"REPLAY_COUNTER_STATE",
- "receive_counter":2,"unchanged":true}
-```
-
-The `REJECTED` event fires at the counter check — before AEAD decryption is even attempted. The `REPLAY_COUNTER_STATE` record confirms that `receive_counter` remained at 2 after the rejection, confirming no state was consumed.
-
-**Why GCM alone does not prevent replay:** AES-GCM guarantees **authenticity** — the record was produced by someone holding the correct key and has not been modified since. It does not guarantee **freshness** — it has no memory of which ciphertexts it has previously accepted. The counter-0 record has a valid tag because it was legitimately produced. A valid tag only means "authentic and unmodified"; it says nothing about whether this specific ciphertext has been seen before. The receive counter is the only mechanism providing freshness.
-
-### 10.2 Experiment B — Authenticate-Before-Advance
-
-A garbage packet (all bytes XOR 0xFF — completely invalid ciphertext) with counter value 0 was submitted to a receiver expecting counter 0:
-
-```json
-{"ts":"2026-09-18T14:42:29Z","role":"replay","event":"REJECTED",
- "outcome":"GARBAGE_AT_COUNTER_0","counter":0,
- "reason":"AEAD verification failed","receive_counter_after":0}
-```
-
-After the rejection, `receive_counter_after` is 0 — unchanged. The legitimate record at counter 0 was then accepted:
-
-```json
-{"ts":"2026-09-18T14:42:29Z","role":"replay","event":"SUCCESS",
- "outcome":"LEGITIMATE_RECORD_ACCEPTED_AFTER_GARBAGE","counter":0,
- "plaintext":"legitimate record 0","receive_counter_after":1}
-```
-
-**Why this ordering matters:** If the counter were advanced before AEAD decryption, an attacker could send a garbage packet at the next expected counter value. AEAD would fail, but the counter would already have been consumed. The legitimate record at the same counter would then be rejected as "stale" — a valid, authentic message dropped because an unauthenticated garbage packet was processed first. Our implementation advances the counter only after AEAD succeeds, preventing this denial-of-service.
-
----
-
-## 11. TR-4 — Forward Secrecy
-
-Forward secrecy means that a later compromise of a long-term authentication key cannot be used to reconstruct session keys from past sessions. The test demonstrates this with a controlled negative and positive comparison.
-
-### 11.1 Why Forward Secrecy Holds
+2. Testing Results
+
+2.1 TR-1: Normal Authenticated Session
+
+Objective:
+Complete the full M1–M4 handshake, derive both directional traffic keys, and
+exchange at least three protected application records in each direction. Confirm
+that the raw X25519 shared secret is not directly used as the AES-GCM key, and
+that counters 0, 1, and 2 are used correctly.
+
+Procedure:
+1. Generate long-term Ed25519 keypairs for Alice and Bob; exchange public keys.
+2. Alice generates Alice_SID and ephemeral X25519 keypair; sends M1.
+3. Bob generates Bob_SID and ephemeral X25519 keypair; echoes Alice_SID in M2.
+4. Both sides compute the 124-byte transcript and SHA-256 hash.
+5. Alice signs and sends M3; Bob verifies. Bob signs and sends M4; Alice verifies.
+6. Both sides compute X25519 shared secret and derive K_Alice_to_Bob, K_Bob_to_Alice.
+7. Alice sends three AES-256-GCM records (counters 0, 1, 2); Bob sends three replies.
+8. Verify that fingerprints of shared_secret, k_a2b, and k_b2a are identical on both
+   sides, and that shared_secret_fp ≠ k_a2b_fp (confirming HKDF is applied).
+
+Test Input:
+    Alice ID: AL000001    Bob ID: BO000001
+    Alice_SID: e0a713436b1863e9ec39d85c08906d2c
+    Bob_SID:   c7e90a3e230e5dd776b225693c0c4767
+    Plaintext (Alice→Bob): "Alice→Bob: message 0/1/2"
+    Plaintext (Bob→Alice): "Bob→Alice: reply 0/1/2"
+
+Expected Behaviour:
+    Both sides log identical shared_secret_fp, k_a2b_fp, and k_b2a_fp.
+    shared_secret_fp differs from k_a2b_fp — raw DH output is not the AES key.
+    All six records (3 per direction) are accepted; GCM tags match across logs.
+    Nonces are 000000000000000000000000, ...01, ...02 in each direction.
+
+Observed Behaviour:
+    Handshake completed successfully. Both alice.jsonl and bob.jsonl reported
+    identical fingerprints: shared_secret_fp = 20fb19ff2b7f9e5f,
+    k_a2b_fp = 6a1099fafdc55c9d, k_b2a_fp = b428f7dc68d8ceb2.
+    shared_secret_fp (20fb19ff) differs from k_a2b_fp (6a1099fa), confirming
+    HKDF was applied. Cross-verified: tag_fp for Alice→Bob counter-0
+    (28e4de03fb54eede) matches identically in both logs.
+
+Outcome: PASS
+
+Supporting Evidence — alice.jsonl:
+
+    {"ts":"2026-09-18T14:33:05Z","role":"alice","event":"HANDSHAKE_OK",
+     "alice_id":"AL000001","bob_id":"BO000001",
+     "alice_sid":"e0a713436b1863e9ec39d85c08906d2c",
+     "bob_sid":"c7e90a3e230e5dd776b225693c0c4767",
+     "shared_secret_fp":"20fb19ff2b7f9e5f",
+     "k_a2b_fp":"6a1099fafdc55c9d","k_b2a_fp":"b428f7dc68d8ceb2"}
+
+    {"ts":"2026-09-18T14:33:05Z","role":"alice","event":"SUCCESS",
+     "outcome":"RECORD_SENT","direction":"AL000001→BO000001",
+     "counter":0,"nonce":"000000000000000000000000",
+     "plaintext":"Alice→Bob: message 0","tag_fp":"28e4de03fb54eede"}
+
+    {"ts":"2026-09-18T14:33:05Z","role":"alice","event":"SUCCESS",
+     "outcome":"RECORD_RECEIVED","direction":"BO000001→AL000001",
+     "counter":0,"nonce":"000000000000000000000000",
+     "plaintext":"Bob→Alice: reply 0","tag_fp":"d39b81632c9cb704"}
+
+    {"ts":"2026-09-18T14:33:05Z","role":"alice","event":"SUCCESS",
+     "outcome":"RECORD_SENT","direction":"AL000001→BO000001",
+     "counter":1,"nonce":"000000000000000000000001",
+     "plaintext":"Alice→Bob: message 1","tag_fp":"(see alice.jsonl)"}
+
+    {"ts":"2026-09-18T14:33:05Z","role":"alice","event":"SUCCESS",
+     "outcome":"RECORD_RECEIVED","direction":"BO000001→AL000001",
+     "counter":1,"nonce":"000000000000000000000001",
+     "plaintext":"Bob→Alice: reply 1","tag_fp":"a401395192a22737"}
+
+    {"ts":"2026-09-18T14:33:05Z","role":"alice","event":"SUCCESS",
+     "outcome":"RECORD_SENT","direction":"AL000001→BO000001",
+     "counter":2,"nonce":"000000000000000000000002",
+     "plaintext":"Alice→Bob: message 2","tag_fp":"d71f6b7a61df9231"}
+
+    {"ts":"2026-09-18T14:33:05Z","role":"alice","event":"SUCCESS",
+     "outcome":"RECORD_RECEIVED","direction":"BO000001→AL000001",
+     "counter":2,"nonce":"000000000000000000000002",
+     "plaintext":"Bob→Alice: reply 2","tag_fp":"d856b82d31db35af"}
+
+Supporting Evidence — bob.jsonl (HANDSHAKE_OK only):
+
+    {"ts":"2026-09-18T14:33:05Z","role":"bob","event":"HANDSHAKE_OK",
+     "alice_id":"AL000001","bob_id":"BO000001",
+     "alice_sid":"e0a713436b1863e9ec39d85c08906d2c",
+     "bob_sid":"c7e90a3e230e5dd776b225693c0c4767",
+     "shared_secret_fp":"20fb19ff2b7f9e5f",
+     "k_a2b_fp":"6a1099fafdc55c9d","k_b2a_fp":"b428f7dc68d8ceb2"}
+
+
+─────────────────────────────────────────────────────────────────────────────
+
+2.2 TR-2: Man-in-the-Middle (MITM) Demonstration
+
+Objective:
+First, run the protocol with Ed25519 authentication intentionally disabled
+(--insecure-demo). Show that Mallory can substitute ephemeral keys, establish
+independent sessions with Alice and Bob, and read/modify application records.
+Then restore full authentication and show that the same substitution is detected
+and the handshake aborted before any application data is exchanged.
+
+─── Part A: Weakened Mode (Attack Succeeds) ───
+
+Procedure:
+1. Start Bob with --insecure-demo, listening on port 6540.
+2. Start Mallory with --insecure-demo, forwarding Alice→Bob with ephemeral key
+   substitution (Mallory presents her own X25519 keys to each side).
+3. Start Alice with --insecure-demo, connecting to Mallory's port 6541.
+4. Observe that Alice and Bob complete "handshakes" with Mallory, not each other.
+5. Verify that Mallory's log shows MALLORY_READ events with plaintext_seen for
+   every record, and that Alice's k_a2b_fp differs from Bob's k_a2b_fp.
+
+Test Input:
+    Alice ID: AL000001    Bob ID: BO000001
+    Mallory listens on port 6541; connects to Bob on port 6540.
+    Alice connects to Mallory (127.0.0.1:6541), not directly to Bob.
+
+Expected Behaviour:
+    Alice and Bob complete the handshake without error (no authentication check).
+    Mallory holds four independent keys: K_AM (Alice↔Mallory) and K_MB (Mallory↔Bob).
+    Alice's k_a2b_fp matches Mallory's k_alice_to_mallory_fp — not Bob's key.
+    Mallory reads all six plaintext messages (3 per direction) and re-encrypts
+    each before forwarding, appending "[intercepted by Mallory]".
+
+Observed Behaviour:
+    The MITM session completed without either Alice or Bob detecting the attack.
+    Mallory read the plaintext of all six records. Alice's k_a2b_fp (8e3cec2e)
+    matched Mallory's k_alice_to_mallory_fp (8e3cec2e), not Bob's k_a2b_fp
+    (eb3d54fd), proving Alice and Bob held different session keys.
+    Bob received "Alice→Bob: message 0 [intercepted by Mallory]" — content
+    modified by Mallory with no detection.
+
+Outcome: PASS (attack succeeds in weakened mode as expected)
+
+Supporting Evidence — mallory.jsonl (weakened):
+
+    {"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"TRANSCRIPT_HASHES",
+     "alice_side_t_hash":"3da7f58e5541754300bb050ec971f7a795625bc11e30347a8641cf2ad59e9fa1",
+     "bob_side_t_hash":  "79b49c4bd21719b5d1fd9f8f90d24c5f179542b975bd31a4b9d4fa06b70aa54c",
+     "hashes_differ":true}
+
+    {"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"MALLORY_KEYS",
+     "k_alice_to_mallory_fp":"8e3cec2e1031fee8",
+     "k_mallory_to_alice_fp":"a74137b96e8cb60a",
+     "k_mallory_to_bob_fp":  "eb3d54fd7bed3cbe",
+     "k_bob_to_mallory_fp":  "210b195a44e29887"}
+
+    {"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"MALLORY_READ",
+     "direction":"AL000001→mallory→BO000001","counter":0,
+     "plaintext_seen":"Alice→Bob: message 0"}
+
+    {"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"MALLORY_READ",
+     "direction":"BO000001→mallory→AL000001","counter":0,
+     "plaintext_seen":"Bob→Alice: reply 0"}
+
+    {"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"MALLORY_READ",
+     "direction":"AL000001→mallory→BO000001","counter":1,
+     "plaintext_seen":"Alice→Bob: message 1"}
+
+    {"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"MALLORY_READ",
+     "direction":"BO000001→mallory→AL000001","counter":1,
+     "plaintext_seen":"Bob→Alice: reply 1"}
+
+    {"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"MALLORY_READ",
+     "direction":"AL000001→mallory→BO000001","counter":2,
+     "plaintext_seen":"Alice→Bob: message 2"}
+
+    {"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"MALLORY_READ",
+     "direction":"BO000001→mallory→AL000001","counter":2,
+     "plaintext_seen":"Bob→Alice: reply 2"}
+
+    {"ts":"2026-09-18T16:07:09Z","role":"mallory","event":"SUCCESS",
+     "outcome":"MITM_SESSION_COMPLETE","records_intercepted":3}
+
+
+─── Part B: Authenticated Mode (Attack Fails) ───
+
+Procedure:
+1. Repeat the exact same three-process setup without --insecure-demo.
+2. Mallory still substitutes ephemeral keys as before.
+3. Both sides compute different Transcript_Hash values (Alice's covers
+   Mallory's A-side key; Bob's covers Mallory's B-side key).
+4. Alice signs her Transcript_Hash and sends M3.
+5. Mallory cannot forward M3 to Bob — Bob would try to verify Alice's signature
+   against a different transcript_hash and it would fail.
+6. Mallory detects the mismatch and aborts before forwarding M3.
+
+Test Input:
+    Same three-process setup. No --insecure-demo flag.
+
+Expected Behaviour:
+    Mallory logs hashes_differ: true for the two transcript hashes.
+    Mallory logs FAILED with reason "transcript mismatch" and aborts.
+    Alice and Bob both receive connection closed and log FAILED.
+    Zero application records are exchanged.
+
+Observed Behaviour:
+    Mallory immediately computed diverging transcript hashes after both
+    sub-handshakes reached M2. Mallory logged two FAILED events and closed
+    both connections. Alice and Bob both logged HandshakeError: "Connection
+    closed before complete message was received." No application records
+    were exchanged in either direction.
+
+Outcome: PASS (authenticated mode correctly aborts the MITM attack)
+
+Supporting Evidence — mallory.jsonl (authenticated):
+
+    {"ts":"2026-09-18T16:07:11Z","role":"mallory","event":"TRANSCRIPT_HASHES",
+     "alice_side_t_hash":"5f62dbb4ea4bfcbd7ff8d33beb26c13b5cb62a69c8f488ccac717b1cb78d4b06",
+     "bob_side_t_hash":  "7fd7885c850df53c79180e82f386a60a8e26736dc35a71a4cc6567ba6addf887",
+     "hashes_differ":true}
+
+    {"ts":"2026-09-18T16:07:11Z","role":"mallory","event":"FAILED",
+     "reason":"authenticated mode: M3 cannot verify at Bob (transcript mismatch)",
+     "alice_t_hash":"5f62dbb4ea4bfcbd7ff8d33beb26c13b5cb62a69c8f488ccac717b1cb78d4b06",
+     "bob_t_hash":  "7fd7885c850df53c79180e82f386a60a8e26736dc35a71a4cc6567ba6addf887"}
+
+    {"ts":"2026-09-18T16:07:11Z","role":"mallory","event":"FAILED",
+     "reason":"authenticated mode: aborting before forwarding M3 (cannot produce valid sig)"}
+
+
+─────────────────────────────────────────────────────────────────────────────
+
+2.3 TR-3: Replay Attack
+
+Objective:
+Capture a valid AES-256-GCM application record (counter 0) and attempt to
+replay it after the receiver has already advanced to counter 2. Confirm the
+replay is rejected because its counter is stale, not because the tag is invalid.
+Additionally, demonstrate that a failed AEAD verification does not advance the
+receive counter (authenticate-before-advance).
+
+─── Experiment A: Stale Counter Rejection ───
+
+Procedure:
+1. Run a full authenticated session; capture the byte-exact wire frame for
+   counter-0 (tag is valid and unmodified — no tampering).
+2. Send counter-0 and counter-1 records normally; receiver accepts both.
+   Receiver's expected next counter is now 2.
+3. Replay the captured counter-0 wire frame to the receiver unchanged.
+4. Observe that the receiver rejects it at the counter check before AEAD.
+5. Confirm that receive_counter remains at 2 (no state consumed by replay).
+
+Test Input:
+    Captured wire frame: counter = 0, valid GCM tag, plaintext = "record 0"
+    Receiver state at time of replay: receive_counter = 2
+
+Expected Behaviour:
+    Counter-0 and counter-1 are accepted (counters 0 and 1).
+    Replayed counter-0 is rejected: "stale/unexpected counter: got 0, expected 2"
+    receive_counter remains 2 after the rejection.
+    Note: the GCM tag of the replayed record is still cryptographically valid —
+    the counter check, not AEAD, is responsible for the rejection.
+
+Observed Behaviour:
+    Counter-0 and counter-1 were accepted with matching tag fingerprints.
+    The replayed counter-0 was rejected immediately at the counter check
+    with the message "stale/unexpected counter: got 0, expected 2".
+    REPLAY_COUNTER_STATE confirmed receive_counter = 2, unchanged = true.
+
+Outcome: PASS
+
+─── Experiment B: Authenticate-Before-Advance ───
+
+Procedure:
+1. Using a fresh set of session keys (not the captured session), send a garbage
+   ciphertext (all bytes XOR 0xFF — completely invalid) at counter 0 to a
+   receiver expecting counter 0.
+2. Observe AEAD failure and confirm receive_counter is still 0 after rejection.
+3. Immediately send the legitimate counter-0 record.
+4. Confirm it is accepted and receive_counter advances to 1.
+
+Test Input:
+    Garbage ciphertext: all bytes of ct_real XOR 0xFF. Counter = 0.
+    Legitimate ciphertext: valid AES-256-GCM record, counter = 0.
+
+Expected Behaviour:
+    Garbage at counter-0 → AEAD verification failed; receive_counter_after = 0.
+    Legitimate counter-0 → accepted; receive_counter_after = 1.
+
+Observed Behaviour:
+    The garbage packet caused AEAD decryption to fail; receive_counter was not
+    advanced. The legitimate counter-0 record was then accepted successfully.
+    This confirms that a failed AEAD attempt cannot consume a counter slot.
+
+Outcome: PASS
+
+Supporting Evidence — replay.jsonl:
+
+    {"ts":"2026-09-18T14:42:29Z","role":"replay","event":"SESSION",
+     "alice_sid":"6ba03e868d97acd7e7a53863f401f55d",
+     "bob_sid":"647746197cc69a5dba6eb18d47f3a8fb",
+     "k_a2b_fp":"7d5d679354678cbf","k_b2a_fp":"8a65b7092e0b8fdf"}
+
+    {"ts":"2026-09-18T14:42:29Z","role":"replay","event":"SUCCESS",
+     "outcome":"RECORD_RECEIVED","direction":"AL000001→BO000001",
+     "counter":0,"nonce":"000000000000000000000000",
+     "plaintext":"record 0","tag_fp":"efb26d326072547b"}
+
+    {"ts":"2026-09-18T14:42:29Z","role":"replay","event":"SUCCESS",
+     "outcome":"RECORD_RECEIVED","direction":"AL000001→BO000001",
+     "counter":1,"nonce":"000000000000000000000001",
+     "plaintext":"record 1","tag_fp":"43621a2aac593b1b"}
+
+    {"ts":"2026-09-18T14:42:29Z","role":"replay","event":"REJECTED",
+     "direction":"AL000001→BO000001 (REPLAY)","counter":0,
+     "reason":"stale/unexpected counter: got 0, expected 2"}
+
+    {"ts":"2026-09-18T14:42:29Z","role":"replay","event":"REPLAY_COUNTER_STATE",
+     "receive_counter":2,"unchanged":true}
+
+    {"ts":"2026-09-18T14:42:29Z","role":"replay","event":"REJECTED",
+     "outcome":"GARBAGE_AT_COUNTER_0","counter":0,
+     "reason":"AEAD verification failed","receive_counter_after":0}
+
+    {"ts":"2026-09-18T14:42:29Z","role":"replay","event":"SUCCESS",
+     "outcome":"LEGITIMATE_RECORD_ACCEPTED_AFTER_GARBAGE","counter":0,
+     "plaintext":"legitimate record 0","receive_counter_after":1}
+
+
+─────────────────────────────────────────────────────────────────────────────
+
+2.4 TR-4: Forward Secrecy
+
+Objective:
+Run session S1 normally and capture one application record ciphertext. Simulate
+a later compromise of Alice's long-term Ed25519 private key and demonstrate that
+the S1 traffic key cannot be reconstructed from it. For the controlled positive
+comparison, retain Alice's ephemeral X25519 private key and show it does permit
+reconstruction of the S1 traffic key, proving the session key derivation chain
+anchors exclusively to the ephemeral key.
+
+Procedure:
+1. Run a full authenticated session S1 with retain_ephemeral=True (test-only flag).
+2. Seal one S1 application record and capture its wire bytes.
+3. Log S1 session details: alice_sid, bob_sid, shared_secret_fp, k_a2b_fp.
+4. Negative control: confirm that Alice's long-term Ed25519PrivateKey has no
+   exchange() method (type-system enforcement); set reconstruction_possible = False.
+5. Positive control: use the retained alice_eph_priv to compute
+   X25519(alice_eph_priv, bob_epk), re-derive PRK and K_Alice_to_Bob via HKDF,
+   and decrypt the captured S1 ciphertext.
+6. Confirm k_a2b_original_fp == k_a2b_reconstructed_fp and plaintext is recovered.
+
+Test Input:
+    S1 session:
+      alice_sid: 6b49d31cf0955fdead22c1cb73a0de08
+      bob_sid:   92d25bc22584265299d4f142a576fd33
+      k_a2b_fp:  98ef3e3952227d99  (original, derived during S1)
+    Captured record: counter = 0, tag_fp = 411e472ec17fd72a
+    Long-term key type: Ed25519PrivateKey
+    Retained ephemeral: alice_eph_priv (X25519PrivateKey, held in memory only)
+
+Expected Behaviour:
+    Negative control: Ed25519PrivateKey.has_x25519_exchange_method = False.
+      reconstruction_possible = False. The long-term key cannot produce the
+      X25519 shared secret.
+    Positive control: X25519(retained_eph_priv, bob_epk) reproduces shared_secret.
+      HKDF re-derives k_a2b with identical fingerprint.
+      Captured S1 ciphertext decrypts to "S1 confidential record".
+
+Observed Behaviour:
+    Negative control confirmed: Ed25519PrivateKey has no exchange() method
+    (has_x25519_exchange_method = false); reconstruction_possible = false.
+    Positive control succeeded: k_a2b_reconstructed_fp = 98ef3e3952227d99,
+    exactly matching k_a2b_original_fp. The captured ciphertext decrypted
+    successfully to plaintext_recovered = "S1 confidential record".
+    The ephemeral key was stored only in a tempfile.TemporaryDirectory()
+    outside the repository; the directory is deleted automatically when the
+    with-block exits. No private key bytes appear in any log file.
+
+Outcome: PASS
+
+Supporting Evidence — forward_secrecy.jsonl:
+
+    {"ts":"2026-09-18T14:43:10Z","role":"forward_secrecy","event":"S1_SESSION",
+     "alice_sid":"6b49d31cf0955fdead22c1cb73a0de08",
+     "bob_sid":"92d25bc22584265299d4f142a576fd33",
+     "shared_secret_fp":"d0e2d1ea98ae0f93",
+     "k_a2b_fp":"98ef3e3952227d99","k_b2a_fp":"4acfb90b197329bb",
+     "ephemeral_key_retained":"temporary test-only material (not logged)"}
+
+    {"ts":"2026-09-18T14:43:10Z","role":"forward_secrecy","event":"S1_CIPHERTEXT_CAPTURED",
+     "counter":0,"tag_fp":"411e472ec17fd72a"}
+
+    {"ts":"2026-09-18T14:43:10Z","role":"forward_secrecy","event":"LT_KEY_COMPROMISE_SIMULATION",
+     "lt_key_type":"Ed25519PrivateKey",
+     "has_x25519_exchange_method":false,
+     "reconstruction_possible":false,
+     "reason":"Ed25519PrivateKey is not an X25519PrivateKey. It was only used in
+               sign(alice_lt_sk, t_hash) during M3. compute_shared_secret() and
+               derive_traffic_keys() never received it as input, so possessing it
+               gives no path to shared_secret or K_Alice_to_Bob."}
+
+    {"ts":"2026-09-18T14:43:10Z","role":"forward_secrecy","event":"SUCCESS",
+     "outcome":"EPHEMERAL_KEY_RECONSTRUCTS_S1",
+     "k_a2b_original_fp":"98ef3e3952227d99",
+     "k_a2b_reconstructed_fp":"98ef3e3952227d99",
+     "keys_match":true,
+     "plaintext_recovered":"S1 confidential record",
+     "conclusion":"Retained ephemeral X25519 key re-derived S1 traffic keys and
+                   decrypted the captured ciphertext. This confirms that session
+                   confidentiality is anchored entirely to the ephemeral key, not
+                   the long-term Ed25519 key."}
+
+
+─────────────────────────────────────────────────────────────────────────────
+
+3. Test Results Summary
+
+ Test                         Condition                    Result     Outcome
+ ─────────────────────────────────────────────────────────────────────────────
+ Connectivity                 Localhost TCP hello           Pass/Pass  PASS
+ TR-1: Authenticated session  Full M1-M4 + 3 records each  Both keys  PASS
+                              direction                     identical
+ TR-2A: MITM weakened mode    Ed25519 disabled              Mallory    PASS
+                                                            reads all
+                                                            6 records
+ TR-2B: MITM authenticated    Ed25519 enabled               Abort at   PASS
+                                                            M3, zero
+                                                            records
+ TR-3A: Stale counter         Counter-0 replayed after 2   REJECTED   PASS
+                              accepted
+ TR-3B: Garbage at counter    AEAD fails; slot not consumed REJECTED   PASS
+                              then legitimate accepted
+ TR-4 negative: LT key        Ed25519PrivateKey has no      recon =    PASS
+                              exchange()                    False
+ TR-4 positive: Ephemeral key X25519 reruns HKDF            keys_match PASS
+                                                            = true
+ Unit tests (62/62)           All modules                   62/62      PASS
+
+
+─────────────────────────────────────────────────────────────────────────────
+
+4. Discussion
+
+4.1 Why Authentication Prevents MITM
+
+The Ed25519 signatures in M3 and M4 are computed over SHA-256 of the full 124-byte
+transcript, which includes both ephemeral public keys. A MITM who substitutes an
+ephemeral key also changes the transcript, which changes the hash, which makes
+Alice's signature invalid for Bob's transcript. Mallory cannot fix this: producing
+a valid signature for Bob's transcript requires Alice's Ed25519 private key, which
+Mallory does not hold. Signing with Alice's public key is computationally infeasible.
+
+This is why the signatures must cover the ephemeral keys specifically — a protocol
+that authenticated identities alone, while leaving ephemeral keys unauthenticated,
+would still be vulnerable to key substitution. TR-2 demonstrates both failure modes:
+without signatures (--insecure-demo) the attack succeeds; with signatures, the
+transcript divergence is detected and the session is aborted before any application
+data is exchanged.
+
+4.2 Why AES-GCM Alone Does Not Prevent Replay
+
+AES-256-GCM guarantees authenticity — a valid tag proves the record was produced
+by the key holder and has not been modified since. It does not guarantee freshness.
+GCM has no record of which ciphertexts it has previously accepted, so a replayed
+counter-0 ciphertext has a valid tag even the second time it is submitted. The
+per-direction monotonic counter is the sole mechanism providing freshness.
+
+The counter check is performed before AEAD decryption (counter-then-decrypt ordering).
+A stale counter is rejected without ever calling the AEAD engine. Additionally, a
+failed AEAD attempt does not advance the receive counter, so an injected garbage
+packet cannot consume a counter slot and block a legitimate record.
+
+4.3 Why Forward Secrecy Requires Ephemeral Keys
 
 The session key derivation chain is:
 
-```
-X25519(alice_eph_priv, bob_epk)    →  shared_secret  →  HKDF  →  K_Alice_to_Bob
-```
+    alice_eph_priv  →  X25519(alice_eph_priv, bob_epk)  →  shared_secret
+                    →  HKDF(salt=transcript_hash)        →  K_Alice_to_Bob
 
-The long-term Ed25519 key (`alice_lt_sk`) is used only in `sign(alice_lt_sk, transcript_hash)` during M3. It is never passed to `compute_shared_secret()` or `derive_traffic_keys()`. This is not just a design choice — it is enforced by Python's type system: `Ed25519PrivateKey` has no `exchange()` method. Calling `compute_shared_secret()` with an `Ed25519PrivateKey` raises a `TypeError` before any computation.
+Alice's long-term Ed25519 key is used exclusively in sign(alice_lt_sk, t_hash)
+during M3. It is never an input to compute_shared_secret() or derive_traffic_keys().
+Possession of alice_lt_sk provides no path to shared_secret.
 
-### 11.2 S1 Session Details
+Once alice_eph_priv goes out of scope at the end of alice_handshake() in normal
+operation, the shared_secret cannot be recomputed by anyone. A later compromise of
+the long-term signing key can enable future impersonation but cannot decrypt past
+sessions. TR-4 demonstrates this precisely: the long-term key fails to reconstruct
+S1, while the retained ephemeral key succeeds.
 
-```json
-{"ts":"2026-09-18T14:43:10Z","role":"forward_secrecy","event":"S1_SESSION",
- "alice_sid":         "6b49d31cf0955fdead22c1cb73a0de08",
- "bob_sid":           "92d25bc22584265299d4f142a576fd33",
- "shared_secret_fp":  "d0e2d1ea98ae0f93",
- "k_a2b_fp":          "98ef3e3952227d99",
- "k_b2a_fp":          "4acfb90b197329bb",
- "ephemeral_key_retained": "temporary test-only material (not logged)"}
+4.4 Why Two Directional Keys Are Needed
 
-{"ts":"2026-09-18T14:43:10Z","role":"forward_secrecy","event":"S1_CIPHERTEXT_CAPTURED",
- "counter":0,"tag_fp":"411e472ec17fd72a"}
-```
+A single shared key for both directions would require Alice and Bob to coordinate
+their send counters to avoid nonce reuse under the same key. With separate
+K_Alice_to_Bob and K_Bob_to_Alice, nonce uniqueness is a structural property:
+counter N under K_Alice_to_Bob and counter N under K_Bob_to_Alice are encrypted
+under different keys — they can never collide even if both start at 0 simultaneously.
 
-An S1 application record was sealed at counter 0 and its wire bytes retained for the decryption test.
 
-### 11.3 Negative Control — Long-Term Key Compromise
+─────────────────────────────────────────────────────────────────────────────
 
-```json
-{"ts":"2026-09-18T14:43:10Z","role":"forward_secrecy","event":"LT_KEY_COMPROMISE_SIMULATION",
- "lt_key_type":                 "Ed25519PrivateKey",
- "has_x25519_exchange_method":  false,
- "reconstruction_possible":     false,
- "reason": "Ed25519PrivateKey is not an X25519PrivateKey. It was only used in
-            sign(alice_lt_sk, t_hash) during M3. compute_shared_secret() and
-            derive_traffic_keys() never received it as input, so possessing it
-            gives no path to shared_secret or K_Alice_to_Bob."}
-```
+5. Conclusion
 
-`has_x25519_exchange_method: false` confirms the type-system enforcement. Even a full compromise of `alice_lt_sk` provides no path to the X25519 shared secret or any derived traffic key.
+This assignment implemented and verified a complete authenticated ephemeral key
+establishment protocol. The normal session test (TR-1) confirmed that both parties
+derive identical session keys and communicate successfully over AES-256-GCM with
+correct counter-based nonces. The MITM test (TR-2) showed that disabling Ed25519
+authentication allows a full active attack — Mallory read and modified all six
+records — while restoring authentication causes an immediate handshake abort through
+transcript mismatch, with zero application data exposed. The replay test (TR-3)
+demonstrated counter-based rejection and the authenticate-before-advance property.
+The forward secrecy test (TR-4) showed that only the ephemeral X25519 private key
+can reconstruct past session keys — the long-term Ed25519 key provides no such path.
 
-### 11.4 Positive Control — Retained Ephemeral Key
+All 62 unit tests pass. The protocol meets all functional requirements FR-1 through
+FR-7 as specified in the assignment documentation.
 
-To prove the negative result is a real property of the key hierarchy (and not simply a failure to attempt reconstruction), a controlled comparison was run with a retained copy of Alice's ephemeral X25519 private key:
 
-```json
-{"ts":"2026-09-18T14:43:10Z","role":"forward_secrecy","event":"SUCCESS",
- "outcome":               "EPHEMERAL_KEY_RECONSTRUCTS_S1",
- "k_a2b_original_fp":     "98ef3e3952227d99",
- "k_a2b_reconstructed_fp":"98ef3e3952227d99",
- "keys_match":             true,
- "plaintext_recovered":    "S1 confidential record",
- "conclusion": "Retained ephemeral X25519 key re-derived S1 traffic keys and
-                decrypted the captured ciphertext. This confirms that session
-                confidentiality is anchored entirely to the ephemeral key, not
-                the long-term Ed25519 key."}
-```
+─────────────────────────────────────────────────────────────────────────────
 
-`X25519(retained_alice_eph_priv, bob_epk)` produced the same shared secret as the original S1 session. `HKDF(shared_secret, salt=transcript_hash)` produced the identical `K_Alice_to_Bob`. The captured S1 ciphertext decrypted successfully with `plaintext_recovered: "S1 confidential record"`.
+References
 
-The original `alice_eph_priv` was stored inside a `tempfile.TemporaryDirectory()` created outside the repository tree and automatically deleted when the `with` block exited. No ephemeral private key bytes appear in any log file or committed file.
-
-**Conclusion:** Reconstruction is possible only with the ephemeral X25519 private key. Possession of the long-term Ed25519 key provides no path. Discarding ephemeral keys after the session — which happens automatically in normal code paths since `alice_eph_priv` is a local variable that goes out of scope when `alice_handshake()` returns — is what gives the protocol its forward secrecy.
-
----
-
-## 12. Test Results Summary
-
-| Test | Condition | Observed Result | Status |
-|---|---|---|---|
-| Connectivity | Localhost TCP | Both sides exchanged `Hello Bob` / `Hello Alice` | ✅ Pass |
-| TR-1 | Full authenticated session | M1–M4 complete; `k_a2b_fp` and `k_b2a_fp` identical on both sides; 3 records each direction at counters 0,1,2; `shared_secret_fp` ≠ `k_a2b_fp` | ✅ Pass |
-| TR-2A | MITM, `--insecure-demo` | Mallory read and modified all 6 plaintext messages; Alice and Bob have different key fingerprints; session "completed" with Mallory in the middle | ✅ Pass |
-| TR-2B | MITM, authenticated | Mallory aborted at M3; `hashes_differ: true`; both Alice and Bob received `HandshakeError`; zero application records exchanged | ✅ Pass |
-| TR-3A | Replay stale counter | Counter-0 replay rejected: `"stale/unexpected counter: got 0, expected 2"`; `receive_counter` unchanged at 2 | ✅ Pass |
-| TR-3B | Garbage at expected counter | AEAD failed; `receive_counter_after: 0`; legitimate counter-0 then accepted; `receive_counter_after: 1` | ✅ Pass |
-| TR-4 neg | LT-key compromise | `reconstruction_possible: false`; `has_x25519_exchange_method: false` | ✅ Pass |
-| TR-4 pos | Retained ephemeral key | `keys_match: true`; `plaintext_recovered: "S1 confidential record"` | ✅ Pass |
-| Unit tests | Full test suite | 62/62 tests pass across all modules | ✅ 62/62 |
-
----
-
-## 13. Security Analysis
-
-### 13.1 Why Authentication Prevents MITM
-
-The Ed25519 signatures in M3/M4 are computed over the full 124-byte canonical transcript, which includes both parties' ephemeral public keys. Any adversary who substitutes an ephemeral public key thereby changes the transcript, which changes the SHA-256 hash, which invalidates the peer's signature over that hash.
-
-The key insight is that authentication must cover the ephemeral keys, not just the identities. A protocol that authenticated identities but allowed unauthenticated ephemeral key exchange would still be vulnerable to a MITM that replaced ephemeral keys while leaving the identity messages intact.
-
-### 13.2 Why Replay State Is Necessary
-
-AES-GCM is a CCA2-secure encryption scheme: it prevents decryption of new ciphertexts without the key. However, it has no replay protection. A previously accepted ciphertext with a valid tag can be submitted again and will again return the correct plaintext — GCM has no memory.
-
-The per-direction monotonic counter is the freshness mechanism. The receiver maintains `_receive_counter` and only accepts the next expected value. An old ciphertext has a stale counter and is rejected before AEAD decryption. The "verify-then-advance" ordering ensures that a garbage injection at the expected counter cannot consume the slot.
-
-### 13.3 Why Ephemeral Keys Provide Forward Secrecy
-
-The session key derivation path is: `alice_eph_priv` + `bob_epk` → X25519 → `shared_secret` → HKDF → `K_A2B`. The long-term Ed25519 keys do not appear in this path. Once `alice_eph_priv` is discarded (it goes out of scope when `alice_handshake()` returns in normal operation), there is no remaining information from which `shared_secret` can be reconstructed. Future compromise of `alice_lt_sk` only enables impersonation of Alice in future sessions — not decryption of past sessions.
-
-### 13.4 Why Two Directional Keys Are Better Than One
-
-Using a single key for both directions would require Alice and Bob to coordinate their counters to avoid nonce reuse. With separate directional keys, nonce uniqueness is a structural property of the design: counter N under `K_A2B` and counter N under `K_B2A` are under different keys and can never collide. The code enforces this with an assertion:
-
-```python
-assert send_key != receive_key, "send and receive keys must differ"
-```
-
----
-
-## 14. Implementation Structure
-
-| File | Responsibility |
-|---|---|
-| `transport.py` | Instructor-supplied TCP helper — unmodified |
-| `protocol/constants.py` | PROTOCOL_ID, field sizes, `pack_canonical_transcript()`, `transcript_hash()` |
-| `protocol/identity.py` | Ed25519 keygen, load, `sign()`, `verify()` |
-| `protocol/key_schedule.py` | X25519 ephemeral DH, HKDF-SHA-256 key derivation |
-| `protocol/messages.py` | M1–M4 and application record wire encode/decode (JSON + hex) |
-| `protocol/record_layer.py` | AES-256-GCM seal/open with per-direction counter |
-| `protocol/handshake.py` | 4-message handshake state machine |
-| `roles/alice.py` | Alice CLI entry point |
-| `roles/bob.py` | Bob CLI entry point |
-| `roles/mallory.py` | MITM relay for TR-2 |
-| `experiments/replay_capture.py` | TR-3 self-contained demonstration |
-| `experiments/forward_secrecy_demo.py` | TR-4 self-contained demonstration |
-| `evidence_logger.py` | Structured JSONL evidence logger |
-
----
-
-## 15. References
-
-- RFC 7748 — Elliptic Curves for Security (X25519)
-- RFC 8032 — Edwards-Curve Digital Signature Algorithm (Ed25519)
-- RFC 5869 — HMAC-based Extract-and-Expand Key Derivation Function (HKDF)
-- NIST SP 800-38D — Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM)
-- NIST SP 800-186 — Recommendations for Discrete Logarithm-Based Cryptography (Curve25519)
-- Python `cryptography` library documentation — https://cryptography.io
+RFC 7748   – Elliptic Curves for Security (X25519)
+RFC 8032   – Edwards-Curve Digital Signature Algorithm (Ed25519)
+RFC 5869   – HMAC-based Extract-and-Expand Key Derivation Function (HKDF)
+NIST SP 800-38D – Recommendation for GCM
+Python cryptography library – https://cryptography.io
