@@ -1,0 +1,9 @@
+{"ts": "2026-09-18T16:07:09Z", "role": "mallory", "event": "TRANSCRIPT_HASHES", "alice_side_t_hash": "3da7f58e5541754300bb050ec971f7a795625bc11e30347a8641cf2ad59e9fa1", "bob_side_t_hash": "79b49c4bd21719b5d1fd9f8f90d24c5f179542b975bd31a4b9d4fa06b70aa54c", "hashes_differ": true}
+{"ts": "2026-09-18T16:07:09Z", "role": "mallory", "event": "MALLORY_KEYS", "k_alice_to_mallory_fp": "8e3cec2e1031fee8", "k_mallory_to_alice_fp": "a74137b96e8cb60a", "k_mallory_to_bob_fp": "eb3d54fd7bed3cbe", "k_bob_to_mallory_fp": "210b195a44e29887"}
+{"ts": "2026-09-18T16:07:09Z", "role": "mallory", "event": "MALLORY_READ", "direction": "AL000001\u2192mallory\u2192BO000001", "counter": 0, "plaintext_seen": "Alice\u2192Bob: message 0"}
+{"ts": "2026-09-18T16:07:09Z", "role": "mallory", "event": "MALLORY_READ", "direction": "BO000001\u2192mallory\u2192AL000001", "counter": 0, "plaintext_seen": "Bob\u2192Alice: reply 0"}
+{"ts": "2026-09-18T16:07:09Z", "role": "mallory", "event": "MALLORY_READ", "direction": "AL000001\u2192mallory\u2192BO000001", "counter": 1, "plaintext_seen": "Alice\u2192Bob: message 1"}
+{"ts": "2026-09-18T16:07:09Z", "role": "mallory", "event": "MALLORY_READ", "direction": "BO000001\u2192mallory\u2192AL000001", "counter": 1, "plaintext_seen": "Bob\u2192Alice: reply 1"}
+{"ts": "2026-09-18T16:07:09Z", "role": "mallory", "event": "MALLORY_READ", "direction": "AL000001\u2192mallory\u2192BO000001", "counter": 2, "plaintext_seen": "Alice\u2192Bob: message 2"}
+{"ts": "2026-09-18T16:07:09Z", "role": "mallory", "event": "MALLORY_READ", "direction": "BO000001\u2192mallory\u2192AL000001", "counter": 2, "plaintext_seen": "Bob\u2192Alice: reply 2"}
+{"ts": "2026-09-18T16:07:09Z", "role": "mallory", "event": "SUCCESS", "outcome": "MITM_SESSION_COMPLETE", "records_intercepted": 3}

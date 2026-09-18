@@ -101,6 +101,8 @@ python roles/alice.py <BOB_IP> \
 
 ### TR-2 — MITM demonstration
 
+`EvidenceLogger` opens in write mode, so run the two variants into separate directories.
+
 **Part A: weakened mode (attack succeeds)**
 
 Start in order: Bob → Mallory → Alice. Allow ~1 second between each.
@@ -111,7 +113,7 @@ python roles/bob.py \
     --port 6540 \
     --alice-id AL000001 --bob-id BO000001 \
     --key-stem keys/bob --alice-pub keys/alice.pub \
-    --trial-dir evidence/tr2_mitm \
+    --trial-dir evidence/tr2_mitm/weakened \
     --insecure-demo
 
 # Mallory's machine (or any intermediate host)
@@ -119,7 +121,7 @@ python roles/mallory.py \
     --listen-port 6541 \
     --bob-host <BOB_IP> --bob-port 6540 \
     --alice-id AL000001 --bob-id BO000001 \
-    --trial-dir evidence/tr2_mitm \
+    --trial-dir evidence/tr2_mitm/weakened \
     --insecure-demo
 
 # Alice's machine (connect to Mallory, not Bob)
@@ -127,13 +129,37 @@ python roles/alice.py <MALLORY_IP> \
     --port 6541 \
     --alice-id AL000001 --bob-id BO000001 \
     --key-stem keys/alice --bob-pub keys/bob.pub \
-    --trial-dir evidence/tr2_mitm \
+    --trial-dir evidence/tr2_mitm/weakened \
     --insecure-demo
 ```
 
 **Part B: authenticated mode (attack fails)**
 
-Same commands without `--insecure-demo`. Mallory aborts before forwarding M3; all three processes exit with a handshake failure.
+Same commands without `--insecure-demo`, using a different `--trial-dir`. Mallory aborts
+before forwarding M3; all three processes exit with a handshake failure.
+
+```bash
+# Bob's machine
+python roles/bob.py \
+    --port 6542 \
+    --alice-id AL000001 --bob-id BO000001 \
+    --key-stem keys/bob --alice-pub keys/alice.pub \
+    --trial-dir evidence/tr2_mitm/authenticated
+
+# Mallory's machine
+python roles/mallory.py \
+    --listen-port 6543 \
+    --bob-host <BOB_IP> --bob-port 6542 \
+    --alice-id AL000001 --bob-id BO000001 \
+    --trial-dir evidence/tr2_mitm/authenticated
+
+# Alice's machine
+python roles/alice.py <MALLORY_IP> \
+    --port 6543 \
+    --alice-id AL000001 --bob-id BO000001 \
+    --key-stem keys/alice --bob-pub keys/bob.pub \
+    --trial-dir evidence/tr2_mitm/authenticated
+```
 
 ### TR-3 — Replay demonstration (self-contained, no network)
 
