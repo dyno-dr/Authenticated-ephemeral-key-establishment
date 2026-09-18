@@ -1,0 +1,22 @@
+# Private key material — never commit
+keys/*.key
+keys/*.pem
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Pytest cache
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+pyrightconfig.json
