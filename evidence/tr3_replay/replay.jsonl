@@ -1,7 +1,7 @@
-{"ts": "2026-09-18T06:07:05Z", "role": "replay", "event": "SESSION", "alice_sid": "b9ce2a41c173a26d7fadb276b663c4f4", "bob_sid": "e757711677d7c2df50149f3ab6af8528", "k_a2b_fp": "99b2c8f6f3dc67c1", "k_b2a_fp": "5e588a38dfadff39"}
-{"ts": "2026-09-18T06:07:05Z", "role": "replay", "event": "SUCCESS", "outcome": "RECORD_RECEIVED", "direction": "AL000001\u2192BO000001", "counter": 0, "nonce": "000000000000000000000000", "plaintext": "record 0", "tag_fp": "e35fb8b529007e5d"}
-{"ts": "2026-09-18T06:07:05Z", "role": "replay", "event": "SUCCESS", "outcome": "RECORD_RECEIVED", "direction": "AL000001\u2192BO000001", "counter": 1, "nonce": "000000000000000000000001", "plaintext": "record 1", "tag_fp": "d615ee28f7d93868"}
-{"ts": "2026-09-18T06:07:05Z", "role": "replay", "event": "REJECTED", "direction": "AL000001\u2192BO000001 (REPLAY)", "counter": 0, "reason": "stale/unexpected counter: got 0, expected 2"}
-{"ts": "2026-09-18T06:07:05Z", "role": "replay", "event": "REPLAY_COUNTER_STATE", "receive_counter": 2, "unchanged": true}
-{"ts": "2026-09-18T06:07:05Z", "role": "replay", "event": "REJECTED", "outcome": "GARBAGE_AT_COUNTER_0", "counter": 0, "reason": "AEAD verification failed", "receive_counter_after": 0}
-{"ts": "2026-09-18T06:07:05Z", "role": "replay", "event": "SUCCESS", "outcome": "LEGITIMATE_RECORD_ACCEPTED_AFTER_GARBAGE", "counter": 0, "plaintext": "legitimate record 0", "receive_counter_after": 1}
+{"ts": "2026-09-18T14:42:29Z", "role": "replay", "event": "SESSION", "alice_sid": "6ba03e868d97acd7e7a53863f401f55d", "bob_sid": "647746197cc69a5dba6eb18d47f3a8fb", "k_a2b_fp": "7d5d679354678cbf", "k_b2a_fp": "8a65b7092e0b8fdf"}
+{"ts": "2026-09-18T14:42:29Z", "role": "replay", "event": "SUCCESS", "outcome": "RECORD_RECEIVED", "direction": "AL000001\u2192BO000001", "counter": 0, "nonce": "000000000000000000000000", "plaintext": "record 0", "tag_fp": "efb26d326072547b"}
+{"ts": "2026-09-18T14:42:29Z", "role": "replay", "event": "SUCCESS", "outcome": "RECORD_RECEIVED", "direction": "AL000001\u2192BO000001", "counter": 1, "nonce": "000000000000000000000001", "plaintext": "record 1", "tag_fp": "43621a2aac593b1b"}
+{"ts": "2026-09-18T14:42:29Z", "role": "replay", "event": "REJECTED", "direction": "AL000001\u2192BO000001 (REPLAY)", "counter": 0, "reason": "stale/unexpected counter: got 0, expected 2"}
+{"ts": "2026-09-18T14:42:29Z", "role": "replay", "event": "REPLAY_COUNTER_STATE", "receive_counter": 2, "unchanged": true}
+{"ts": "2026-09-18T14:42:29Z", "role": "replay", "event": "REJECTED", "outcome": "GARBAGE_AT_COUNTER_0", "counter": 0, "reason": "AEAD verification failed", "receive_counter_after": 0}
+{"ts": "2026-09-18T14:42:29Z", "role": "replay", "event": "SUCCESS", "outcome": "LEGITIMATE_RECORD_ACCEPTED_AFTER_GARBAGE", "counter": 0, "plaintext": "legitimate record 0", "receive_counter_after": 1}
