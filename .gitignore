@@ -2,6 +2,9 @@
 keys/*.key
 keys/*.pem
 
+# Scratch evidence directories from incomplete runs
+evidence/tr1_two_computers/
+
 # Python cache
 __pycache__/
 *.pyc
