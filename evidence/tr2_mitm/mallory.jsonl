@@ -1,3 +1,9 @@
-{"ts": "2026-09-18T05:09:09Z", "role": "mallory", "event": "TRANSCRIPT_HASHES", "alice_side_t_hash": "1ec8e948131e29cb7c1edc3d197726a3e2178db6ba5155ee2cd8e272ce6915db", "bob_side_t_hash": "102ab5343304ae646a96af11365f7139c70aa08d8921387b070e47636a6ea697", "hashes_differ": true}
-{"ts": "2026-09-18T05:09:09Z", "role": "mallory", "event": "FAILED", "reason": "authenticated mode: M3 cannot verify at Bob (transcript mismatch)", "alice_t_hash": "1ec8e948131e29cb7c1edc3d197726a3e2178db6ba5155ee2cd8e272ce6915db", "bob_t_hash": "102ab5343304ae646a96af11365f7139c70aa08d8921387b070e47636a6ea697"}
-{"ts": "2026-09-18T05:09:09Z", "role": "mallory", "event": "FAILED", "reason": "authenticated mode: aborting before forwarding M3 (cannot produce valid sig)"}
+{"ts": "2026-09-18T14:40:19Z", "role": "mallory", "event": "TRANSCRIPT_HASHES", "alice_side_t_hash": "93bec90d2108ccb3968f61c6fee265630fd4e8fdeb77abe2e62436279149b7b6", "bob_side_t_hash": "16f907d5291bd15f3d8b77b9c16dd6b364a261575848ce5d5171a9fd21d02442", "hashes_differ": true}
+{"ts": "2026-09-18T14:40:19Z", "role": "mallory", "event": "MALLORY_KEYS", "k_alice_to_mallory_fp": "b1b9721098265237", "k_mallory_to_alice_fp": "4f245cfdfcab11bb", "k_mallory_to_bob_fp": "bcddb8a9c95d0d78", "k_bob_to_mallory_fp": "f6edea5a43f8afa2"}
+{"ts": "2026-09-18T14:40:19Z", "role": "mallory", "event": "MALLORY_READ", "direction": "AL000001\u2192mallory\u2192BO000001", "counter": 0, "plaintext_seen": "Alice\u2192Bob: message 0"}
+{"ts": "2026-09-18T14:40:19Z", "role": "mallory", "event": "MALLORY_READ", "direction": "BO000001\u2192mallory\u2192AL000001", "counter": 0, "plaintext_seen": "Bob\u2192Alice: reply 0"}
+{"ts": "2026-09-18T14:40:19Z", "role": "mallory", "event": "MALLORY_READ", "direction": "AL000001\u2192mallory\u2192BO000001", "counter": 1, "plaintext_seen": "Alice\u2192Bob: message 1"}
+{"ts": "2026-09-18T14:40:19Z", "role": "mallory", "event": "MALLORY_READ", "direction": "BO000001\u2192mallory\u2192AL000001", "counter": 1, "plaintext_seen": "Bob\u2192Alice: reply 1"}
+{"ts": "2026-09-18T14:40:19Z", "role": "mallory", "event": "MALLORY_READ", "direction": "AL000001\u2192mallory\u2192BO000001", "counter": 2, "plaintext_seen": "Alice\u2192Bob: message 2"}
+{"ts": "2026-09-18T14:40:19Z", "role": "mallory", "event": "MALLORY_READ", "direction": "BO000001\u2192mallory\u2192AL000001", "counter": 2, "plaintext_seen": "Bob\u2192Alice: reply 2"}
+{"ts": "2026-09-18T14:40:19Z", "role": "mallory", "event": "SUCCESS", "outcome": "MITM_SESSION_COMPLETE", "records_intercepted": 3}

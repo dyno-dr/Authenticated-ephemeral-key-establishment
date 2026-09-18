@@ -1,0 +1,3 @@
+{"ts": "2026-09-18T14:41:36Z", "role": "mallory", "event": "TRANSCRIPT_HASHES", "alice_side_t_hash": "38805484709c106b387b55ac91e2af7ec319b9763e7530ae0b432be73e8ce4a6", "bob_side_t_hash": "a94a4b3c3cb2995229e079275f9854509d605d820dfc4e328b51721a8536c311", "hashes_differ": true}
+{"ts": "2026-09-18T14:41:36Z", "role": "mallory", "event": "FAILED", "reason": "authenticated mode: M3 cannot verify at Bob (transcript mismatch)", "alice_t_hash": "38805484709c106b387b55ac91e2af7ec319b9763e7530ae0b432be73e8ce4a6", "bob_t_hash": "a94a4b3c3cb2995229e079275f9854509d605d820dfc4e328b51721a8536c311"}
+{"ts": "2026-09-18T14:41:36Z", "role": "mallory", "event": "FAILED", "reason": "authenticated mode: aborting before forwarding M3 (cannot produce valid sig)"}
